@@ -110,6 +110,13 @@ int main(int argc, char *argv[]) {
         build_prompt(prompt, sizeof(prompt), username, host, cwd);
 
         char *command = read_line(prompt);
+        if (command == NULL) { // Ctrl+D on an empty line
+            break;
+        }
+        if (strcmp(command, "exit") == 0 || strcmp(command, "quit") == 0) {
+            free(command);
+            break;
+        }
         if (command[0] != '\0') {
             if (is_streaming_command(command)) {
                 if (run_streaming_session(session, command) != 0) {
@@ -122,6 +129,10 @@ int main(int argc, char *argv[]) {
         }
         free(command);
     }
-    printf("Reached Here");
 
+    ssh_disconnect(session);
+    ssh_free(session);
+    fprintf(stdout, "Connection closed.\n");
+
+    return 0;
 }

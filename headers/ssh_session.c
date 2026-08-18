@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <string.h>
 #include <pthread.h>
+#include <time.h>
+#include <unistd.h>
 #include "ssh_connection.h"
 
 // Session VARs
@@ -17,6 +19,24 @@ static pthread_mutex_t workdir_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t session_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int last_exit_status = 0;
+
+// Spinner shown on stderr while exec_() blocks on the network round trip.
+static volatile int spinner_running = 0;
+
+static void *spinner_thread_fn(void *arg) {
+    (void)arg;
+    static const char *frames[] = {"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"};
+    int i = 0;
+    while (spinner_running) {
+        fprintf(stderr, "\r%s", frames[i % 8]);
+        fflush(stderr);
+        i++;
+        usleep(80000);
+    }
+    fprintf(stderr, "\r\033[K");
+    fflush(stderr);
+    return NULL;
+}
 
 int exec_(ssh_session session, char* command, int *nbytes, char *output, size_t output_size, int *exit_status)
 {
@@ -96,8 +116,6 @@ char* exec_command(ssh_session session, char *command, int visibility) {
     int nbytes;
     char output[4048];
     char full_cmd[1400];
-    int previous_line_break = -1;
-    int line_breaks_position = -1;
     int exit_status = 0;
 
     if (! strcmp(command, "clear")) { // Placeholder until i figure this out
@@ -115,35 +133,72 @@ char* exec_command(ssh_session session, char *command, int visibility) {
         command = adjusted_command;
     }
 
+    // `;` instead of `&&` between every step so pwd (and the exit-code
+    // marker) always run even if the command fails — previously a failing
+    // command short-circuited past `&& pwd`, which silently reset the
+    // tracked directory to empty (-> $HOME) on any error. The trailing
+    // `2>&1` on the whole subshell merges stderr into the stream we
+    // actually read back (exec_() only reads the channel's stdout stream,
+    // so without this, error output was just discarded).
+    static const char *EXIT_MARKER = "==FLASHSSH_EXIT==";
     pthread_mutex_lock(&workdir_mutex);
-    snprintf(full_cmd, sizeof(full_cmd), "(cd %s && %s && pwd)", work_dir, command);
+    snprintf(full_cmd, sizeof(full_cmd), "(cd %s; %s; echo \"%s$?\"; pwd) 2>&1",
+             work_dir, command, EXIT_MARKER);
     pthread_mutex_unlock(&workdir_mutex);
 
-    exec_(session, full_cmd, &nbytes, output, sizeof(output), &exit_status);
-    last_exit_status = exit_status;
+    pthread_t spinner_tid;
+    int show_spinner = (visibility != 1);
+    if (show_spinner) {
+        spinner_running = 1;
+        pthread_create(&spinner_tid, NULL, spinner_thread_fn, NULL);
+    }
 
-    for (int i = 0; i < nbytes; i++) {
-        if (output[i] == '\n') {
-            previous_line_break = line_breaks_position;
-            line_breaks_position = i;
+    exec_(session, full_cmd, &nbytes, output, sizeof(output), &exit_status);
+
+    if (show_spinner) {
+        spinner_running = 0;
+        pthread_join(spinner_tid, NULL);
+    }
+
+    // Find the marker to split "visible output" from the exit code + new pwd
+    // that follow it. Falls back to showing everything if it's ever missing
+    // (shouldn't happen, but better than swallowing output silently).
+    int marker_len = (int)strlen(EXIT_MARKER);
+    int marker_pos = -1;
+    for (int i = 0; i + marker_len <= nbytes; i++) {
+        if (memcmp(&output[i], EXIT_MARKER, marker_len) == 0) {
+            marker_pos = i;
+            break;
         }
     }
 
-    // The final pwd's output is the line between the second-to-last and last newline.
-    char new_dir[256];
-    memset(new_dir, '\0', sizeof(new_dir));
-    int j = 0;
-    for (int i = previous_line_break + 1; i < line_breaks_position && j < (int)sizeof(new_dir) - 1; i++) {
-        new_dir[j++] = output[i];
-        output[i] = '\0';
+    int visible_len = (marker_pos >= 0) ? marker_pos : nbytes;
+
+    if (marker_pos >= 0) {
+        last_exit_status = atoi(&output[marker_pos + marker_len]);
+
+        int p = marker_pos + marker_len;
+        while (p < nbytes && output[p] != '\n') p++;
+        p++; // skip the newline after the exit code
+
+        int end = nbytes;
+        while (end > p && (output[end - 1] == '\n' || output[end - 1] == '\r')) end--;
+
+        char new_dir[256];
+        memset(new_dir, '\0', sizeof(new_dir));
+        int len = end - p;
+        if (len > (int)sizeof(new_dir) - 1) len = (int)sizeof(new_dir) - 1;
+        if (len > 0) memcpy(new_dir, &output[p], len);
+
+        pthread_mutex_lock(&workdir_mutex);
+        memcpy(work_dir, new_dir, sizeof(new_dir));
+        pthread_mutex_unlock(&workdir_mutex);
+    } else {
+        last_exit_status = exit_status;
     }
 
-    pthread_mutex_lock(&workdir_mutex);
-    memcpy(work_dir, new_dir, sizeof(new_dir));
-    pthread_mutex_unlock(&workdir_mutex);
-
-    if (visibility != 1){
-        fprintf(stdout, "%s", output);
+    if (visibility != 1) {
+        fwrite(output, 1, visible_len, stdout);
     }
 
     return SSH_OK;

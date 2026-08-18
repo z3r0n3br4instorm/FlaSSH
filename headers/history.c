@@ -26,26 +26,52 @@ static void history_push(const char *line, int line_len) {
     entries[entry_count++] = copy;
 }
 
-void history_load(ssh_session session) {
+// zsh's EXTENDED_HISTORY option prefixes each line with ": <epoch>:<elapsed>;"
+// before the actual command. Strips that prefix if present; plain
+// bash-history lines (and non-extended zsh history) are left untouched.
+static void strip_zsh_extended_prefix(const char **line, int *line_len) {
+    const char *p = *line;
+    int len = *line_len;
+    if (len < 2 || p[0] != ':' || p[1] != ' ') return;
+
+    int i = 2;
+    while (i < len && p[i] >= '0' && p[i] <= '9') i++;
+    if (i == 2 || i >= len || p[i] != ':') return;
+    i++;
+    int j = i;
+    while (j < len && p[j] >= '0' && p[j] <= '9') j++;
+    if (j == i || j >= len || p[j] != ';') return;
+    j++;
+
+    *line = p + j;
+    *line_len = len - j;
+}
+
+static void load_history_file(ssh_session session, char *command) {
     int nbytes = 0;
     char *output = malloc(HISTORY_DOWNLOAD_BUF);
     if (output == NULL) return;
 
-    int rc = exec_(session, "cat ~/.bash_history 2>/dev/null", &nbytes, output, HISTORY_DOWNLOAD_BUF, NULL);
+    int rc = exec_(session, command, &nbytes, output, HISTORY_DOWNLOAD_BUF, NULL);
     if (rc == SSH_OK) {
         int line_start = 0;
-        for (int i = 0; i < nbytes; i++) {
-            if (output[i] == '\n') {
-                history_push(&output[line_start], i - line_start);
+        for (int i = 0; i <= nbytes; i++) {
+            if (i == nbytes || output[i] == '\n') {
+                const char *line = &output[line_start];
+                int line_len = i - line_start;
+                strip_zsh_extended_prefix(&line, &line_len);
+                history_push(line, line_len);
                 line_start = i + 1;
             }
-        }
-        if (line_start < nbytes) {
-            history_push(&output[line_start], nbytes - line_start);
         }
     }
 
     free(output);
+}
+
+void history_load(ssh_session session) {
+    load_history_file(session, "cat ~/.bash_history 2>/dev/null");
+    load_history_file(session, "cat ~/.zsh_history 2>/dev/null");
 }
 
 void history_add(const char *command) {

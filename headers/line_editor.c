@@ -157,6 +157,12 @@ char* read_line(const char *prompt) {
             refresh_line(prompt, buf, len, len, ""); // drop any ghost suggestion before committing
             write(STDOUT_FILENO, "\r\n", 2);
             break;
+        } else if (c == 4) { // Ctrl+D — quit on an empty line, like a real shell
+            if (len == 0) {
+                write(STDOUT_FILENO, "\r\n", 2);
+                terminal_disable_raw_mode();
+                return NULL;
+            }
         } else if (c == 127 || c == 8) { // Backspace
             if (pos > 0) {
                 memmove(&buf[pos - 1], &buf[pos], len - pos);

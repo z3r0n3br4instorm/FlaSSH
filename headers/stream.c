@@ -11,6 +11,10 @@
 #include <time.h>
 
 #define CTRL_Q 0x11
+#define CTRL_RBRACKET 0x1d // telnet's classic escape char — many terminal
+                           // emulators (Termux included) intercept Ctrl+Q
+                           // themselves for flow control before it ever
+                           // reaches us, so this is the reliable fallback.
 #define STATUS_BAR_REPAINT_MS 300
 
 static const char *STREAMING_COMMANDS[] = {
@@ -170,7 +174,7 @@ int run_streaming_session(ssh_session session, const char *command) {
         return -1;
     }
 
-    fprintf(stderr, "\033[3mClient-side processing has been overridden by streaming mode. Press Ctrl+Q to return.\033[0m\r\n");
+    fprintf(stderr, "\033[3mClient-side processing has been overridden by streaming mode. Press Ctrl+Q (or Ctrl+]) to return.\033[0m\r\n");
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -222,7 +226,7 @@ int run_streaming_session(ssh_session session, const char *command) {
             for (ssize_t i = 0; i < n; i++) {
                 char ch = inbuf[i];
 
-                if (ch == CTRL_Q) {
+                if (ch == CTRL_Q || ch == CTRL_RBRACKET) {
                     detached = 1;
                     break;
                 }

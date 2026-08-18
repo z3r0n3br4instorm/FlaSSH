@@ -3,7 +3,8 @@
 
 // Reads one line of input with a readline-like editor: left/right arrows
 // move the cursor, up/down arrows walk command history, and Tab completes
-// against history entries. Returns a malloc'd string (caller frees it).
+// against history entries. Returns a malloc'd string (caller frees it), or
+// NULL if Ctrl+D was pressed on an empty line (caller should exit).
 char* read_line(const char *prompt);
 
 // Shared terminal raw-mode toggles (byte-at-a-time input, no local echo).

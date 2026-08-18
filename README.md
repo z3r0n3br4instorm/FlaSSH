@@ -1,14 +1,23 @@
-# FlashSSH
+<p align="center">
+  <img src="Assets/logo.png" alt="FlashSSH logo">
+</p>
 
-A custom SSH client built on top of [libssh](https://www.libssh.org/), with a
-p10k-style prompt, fish-style history suggestions, and a best-effort PTY
-passthrough mode for full-screen and interactive programs (`btop`, `vim`,
-`sudo`, `tmux`, ...).
+<p align="center"><strong>A lag-free SSH experience.</strong></p>
 
-FlashSSH normally runs each command as a one-shot remote exec and prints the
-result (fast, but not a real terminal for the remote program). When it
-detects a command that needs a real TTY, it transparently switches to a raw
-PTY passthrough session instead.
+A normal SSH session ties every keystroke to a full network round trip —
+type a character, wait for the remote to echo it back, see it appear. On
+anything but a fast, low-latency link, that's exactly where the familiar
+laggy, rubber-banding feeling of typing over SSH comes from. FlashSSH exists
+because most of that round-tripping is unnecessary: typing, cursor movement,
+history recall, and tab completion all happen instantly against a client-side
+line editor, with a single network round trip only when you actually press
+Enter — instead of one per keystroke.
+
+FlashSSH is a custom SSH client built on top of [libssh](https://www.libssh.org/),
+with a p10k-style prompt, fish-style history suggestions, and a best-effort
+PTY passthrough mode for full-screen and interactive programs (`btop`, `vim`,
+`sudo`, `tmux`, ...) that genuinely need a real terminal and can't be made
+lag-free this way.
 
 ## Features
 
@@ -34,11 +43,13 @@ PTY passthrough session instead.
   - **Ctrl+C** and other control keys are forwarded to the remote program as
     normal — nothing local intercepts them, so a stuck remote process can be
     killed the normal way without touching the FlashSSH client itself.
-  - **Ctrl+Q** detaches back to the FlashSSH prompt. For most streamed
-    programs this also ends the remote process (same as closing an SSH
-    session would). The one exception is `tmux`: since a tmux session lives
-    in a persistent server process, detaching (either with Ctrl+Q or tmux's
-    own `Ctrl+B d`) leaves the session running on the remote host.
+  - **Ctrl+Q** (or **Ctrl+]** if your terminal eats Ctrl+Q for its own flow
+    control — Termux and several desktop terminal emulators do) detaches
+    back to the FlashSSH prompt. For most streamed programs this also ends
+    the remote process (same as closing an SSH session would). The one
+    exception is `tmux`: since a tmux session lives in a persistent server
+    process, detaching (either with Ctrl+Q/Ctrl+] or tmux's own `Ctrl+B d`)
+    leaves the session running on the remote host.
   - **Password prompt override** — if the remote output looks like a
     password prompt, input switches to a local, blind (unechoed) buffer and
     is sent to the remote in one shot when you press Enter, instead of being
@@ -126,7 +137,7 @@ Examples:
 | Up / Down      | Walk command history                                          |
 | Tab            | Complete the current word (history for the first word, live directory listing for the rest) |
 | Ctrl+C         | (streaming mode) forwarded to the remote program               |
-| Ctrl+Q         | (streaming mode) detach back to the FlashSSH prompt             |
+| Ctrl+Q or Ctrl+] | (streaming mode) detach back to the FlashSSH prompt (use Ctrl+] if your terminal intercepts Ctrl+Q) |
 
 ## Project layout
 
