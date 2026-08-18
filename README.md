@@ -99,6 +99,10 @@ sudo apt-get install libssh-dev
 make
 ```
 
+Prebuilt `linux-x86_64` and `linux-arm64` binaries are attached to each
+[GitHub release](../../releases), built automatically by
+`.github/workflows/build-and-release.yml` on every push to `main`.
+
 This produces a `main` binary in the project root.
 
 ## Usage

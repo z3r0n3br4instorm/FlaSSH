@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <stdint.h>
 #include <pthread.h>
 #include "ssh_connection.h"
 
@@ -80,9 +79,10 @@ int exec_(ssh_session session, char* command, int *nbytes, char *output, size_t 
 
   ssh_channel_send_eof(channel);
   if (exit_status != NULL) {
-      uint32_t exit_code = 0;
-      ssh_channel_get_exit_state(channel, &exit_code, NULL, NULL);
-      *exit_status = (int)exit_code;
+      // ssh_channel_get_exit_state() would avoid the deprecation warning
+      // here, but it only exists in libssh >= 0.10 — this older call works
+      // on every libssh we've actually needed to build against.
+      *exit_status = ssh_channel_get_exit_status(channel);
   }
   ssh_channel_close(channel);
   ssh_channel_free(channel);
