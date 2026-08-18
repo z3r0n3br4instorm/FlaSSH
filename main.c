@@ -118,13 +118,34 @@ int main(int argc, char *argv[]) {
             break;
         }
         if (command[0] != '\0') {
-            if (is_streaming_command(command)) {
-                if (run_streaming_session(session, command) != 0) {
-                    fprintf(stderr, "Couldn't open a PTY for '%s', running it normally instead.\n", command);
-                    exec_command(session, command, 0);
+            // A leading '!' forces streaming mode for anything the allowlist
+            // and the auto-detection below don't catch.
+            char *to_run = command;
+            int forced_stream = 0;
+            if (to_run[0] == '!') {
+                to_run++;
+                forced_stream = 1;
+            }
+
+            if (to_run[0] != '\0') {
+                if (forced_stream || is_streaming_command(to_run)) {
+                    if (run_streaming_session(session, to_run) != 0) {
+                        fprintf(stderr, "Couldn't open a PTY for '%s', running it normally instead.\n", to_run);
+                        exec_command(session, to_run, 0);
+                    }
+                } else {
+                    exec_command(session, to_run, 0);
+
+                    // The allowlist can't know about every program that needs
+                    // a TTY (codex, and anything else). If the plain exec
+                    // failed for exactly that reason, retry under a PTY.
+                    if (last_command_needed_tty()) {
+                        fprintf(stderr, "\033[3m'%s' needs a terminal — switching to streaming mode.\033[0m\n", to_run);
+                        if (run_streaming_session(session, to_run) != 0) {
+                            fprintf(stderr, "Couldn't open a PTY for '%s'.\n", to_run);
+                        }
+                    }
                 }
-            } else {
-                exec_command(session, command, 0);
             }
         }
         free(command);

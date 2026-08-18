@@ -17,6 +17,22 @@
                            // reaches us, so this is the reliable fallback.
 #define STATUS_BAR_REPAINT_MS 300
 
+// Predictive local echo: typed characters are painted immediately in grey,
+// then the server's authoritative echo repaints them in the app's own
+// colors. See the comment above paint_prediction() for the mechanism.
+#define PREDICT_COLOR "\033[38;5;242m"
+#define MAX_PREDICTIONS 32
+
+// Whether prediction helps depends on the program, not on its name, so it's
+// scored at runtime instead of guessed from a list: predict one character,
+// see whether the server answers with a small chunk containing it, and
+// widen or shut off accordingly. A program that echoes what you type
+// (shell, editor, REPL, codex) confirms quickly; one that repaints its whole
+// screen per keypress never does, and prediction switches itself off.
+#define PREDICT_SMALL_ECHO_MAX 512   // bigger replies are redraws, not echoes
+#define PREDICT_COOLDOWN_MS 2000     // doubles up to the cap on each re-disable
+#define PREDICT_COOLDOWN_MAX_MS 30000
+
 static const char *STREAMING_COMMANDS[] = {
     "btop", "htop", "top", "vim", "vi", "nvim", "nano", "less", "more",
     "man", "tmux", "screen", "watch", "mc", "irssi", "weechat",
@@ -24,19 +40,39 @@ static const char *STREAMING_COMMANDS[] = {
     "python3", "python", "node", "irb", "pry", NULL
 };
 
-int is_streaming_command(const char *command) {
-    char first_word[64];
+// Full-screen dashboards where a keypress is a *command*, not text to be
+// echoed (pressing 'f' in btop opens a filter, it doesn't type an "f").
+// Predicting there would paint a character the server will never echo.
+static const char *NO_PREDICT_COMMANDS[] = {
+    "btop", "htop", "top", "watch", "mc", "irssi", "weechat", NULL
+};
+
+static void extract_first_word(const char *command, char *out, size_t out_size) {
     size_t i = 0;
-    while (command[i] != '\0' && command[i] != ' ' && i < sizeof(first_word) - 1) {
-        first_word[i] = command[i];
+    while (command[i] != '\0' && command[i] != ' ' && i < out_size - 1) {
+        out[i] = command[i];
         i++;
     }
-    first_word[i] = '\0';
+    out[i] = '\0';
+}
 
-    for (int j = 0; STREAMING_COMMANDS[j] != NULL; j++) {
-        if (strcmp(first_word, STREAMING_COMMANDS[j]) == 0) return 1;
+static int word_in_list(const char *word, const char **list) {
+    for (int j = 0; list[j] != NULL; j++) {
+        if (strcmp(word, list[j]) == 0) return 1;
     }
     return 0;
+}
+
+int is_streaming_command(const char *command) {
+    char first_word[64];
+    extract_first_word(command, first_word, sizeof(first_word));
+    return word_in_list(first_word, STREAMING_COMMANDS);
+}
+
+static int is_echo_predictable_command(const char *command) {
+    char first_word[64];
+    extract_first_word(command, first_word, sizeof(first_word));
+    return !word_in_list(first_word, NO_PREDICT_COMMANDS);
 }
 
 static volatile sig_atomic_t got_sigwinch = 0;
@@ -57,28 +93,64 @@ static void get_terminal_size(int *cols, int *rows) {
     }
 }
 
+static void format_bytes(long bytes, char *out, size_t out_size) {
+    if (bytes < 1024) {
+        snprintf(out, out_size, "%ldB", bytes);
+    } else if (bytes < 1024 * 1024) {
+        snprintf(out, out_size, "%ld.%ldKB", bytes / 1024, (bytes % 1024) * 10 / 1024);
+    } else {
+        snprintf(out, out_size, "%ld.%ldMB", bytes / (1024 * 1024),
+                 (bytes % (1024 * 1024)) * 10 / (1024 * 1024));
+    }
+}
+
 // The remote process is only ever given (rows - 1) rows of PTY, so it never
 // tries to draw into the real last row — that row is reserved for this bar.
 // Drawing saves/restores the cursor so it doesn't disturb whatever the
 // streamed program is doing.
-static void draw_status_bar(int total_rows, int cols) {
-    char seq[32];
+//
+// Layout: "Streaming... | <live status>" on the left, "<bytes> | FlashSSH" on
+// the right. `status` is what the session is currently doing (local password
+// entry, predictive echo state, resizes, ...) so the bar reports what's going
+// on instead of just sitting there. Everything is plain ASCII so the column
+// arithmetic for right-alignment and truncation stays correct.
+static void draw_status_bar(int total_rows, int cols, const char *status, long bytes) {
+    char seq[64];
     write(STDOUT_FILENO, "\0337", 2); // save cursor position + attributes
 
     int n = snprintf(seq, sizeof(seq), "\033[%d;1H", total_rows);
     write(STDOUT_FILENO, seq, n);
     write(STDOUT_FILENO, "\033[44m\033[K", 8); // blue background, blank the row
 
-    static const char left[] = "Streaming...";
-    static const char right[] = "FlashSSH";
-    write(STDOUT_FILENO, left, sizeof(left) - 1);
+    static const char brand[] = "FlashSSH";
+    char bytes_str[32];
+    format_bytes(bytes, bytes_str, sizeof(bytes_str));
 
-    int right_col = cols - (int)(sizeof(right) - 1) + 1;
-    if (right_col > (int)(sizeof(left) - 1) + 2) {
+    // Right block first, so we know how much room the left block has.
+    char right[64];
+    int right_len = snprintf(right, sizeof(right), "%s | ", bytes_str);
+    int right_total = right_len + (int)(sizeof(brand) - 1) + 1; // +1 trailing pad
+
+    char left[256];
+    int left_len;
+    if (status != NULL && status[0] != '\0') {
+        left_len = snprintf(left, sizeof(left), " Streaming... | %s", status);
+    } else {
+        left_len = snprintf(left, sizeof(left), " Streaming...");
+    }
+
+    int left_room = cols - right_total - 1;
+    if (left_room < 0) left_room = 0;
+    if (left_len > left_room) left_len = left_room; // truncate rather than wrap
+    if (left_len > 0) write(STDOUT_FILENO, left, left_len);
+
+    int right_col = cols - right_total + 1;
+    if (right_col > left_len + 1) {
         n = snprintf(seq, sizeof(seq), "\033[%d;%dH", total_rows, right_col);
         write(STDOUT_FILENO, seq, n);
+        write(STDOUT_FILENO, right, right_len);
         write(STDOUT_FILENO, "\033[3m", 4); // italic
-        write(STDOUT_FILENO, right, sizeof(right) - 1);
+        write(STDOUT_FILENO, brand, sizeof(brand) - 1);
     }
 
     write(STDOUT_FILENO, "\033[0m", 4);
@@ -89,6 +161,34 @@ static long elapsed_ms(const struct timespec *since) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (now.tv_sec - since->tv_sec) * 1000L + (now.tv_nsec - since->tv_nsec) / 1000000L;
+}
+
+// Paints one predicted character in grey at the cursor, then advances the
+// cursor by one cell — the same place the server's echo would land.
+//
+// DECSC/DECRC (\0337 / \0338) save and restore the cursor *and* the current
+// SGR attributes, so the app's own colors survive our write; the explicit
+// \033[1C afterwards is what actually advances past the character we just
+// painted (DECRC alone would put the cursor back on top of it).
+static void paint_prediction(char ch) {
+    char seq[64];
+    int n = snprintf(seq, sizeof(seq), "\0337" PREDICT_COLOR "%c\0338\033[1C", ch);
+    write(STDOUT_FILENO, seq, n);
+}
+
+// Un-paints the last `k` predicted characters and leaves the cursor exactly
+// where the first of them started, so whatever the server sends next
+// overwrites them with its authoritative rendering. Erasing with spaces is
+// only correct for the append-at-end-of-line case, which is the dominant
+// one — mid-line inserts rely on the app redrawing the rest of the line.
+static void rollback_predictions(int k) {
+    if (k <= 0) return;
+
+    char seq[64];
+    int n = snprintf(seq, sizeof(seq), "\033[%dD\0337\033[0m", k);
+    write(STDOUT_FILENO, seq, n);
+    for (int i = 0; i < k; i++) write(STDOUT_FILENO, " ", 1);
+    write(STDOUT_FILENO, "\0338", 2);
 }
 
 static void clear_status_bar(int total_rows) {
@@ -183,7 +283,15 @@ int run_streaming_session(ssh_session session, const char *command) {
     got_sigwinch = 0;
 
     terminal_enable_raw_mode();
-    draw_status_bar(rows, cols);
+
+    char status[192];
+    long bytes_in = 0;
+    int status_dirty = 0; // set whenever `status` changes, so the bar repaints
+                          // on the next loop cycle instead of waiting out the
+                          // 300ms tick (which a short session may never reach)
+    snprintf(status, sizeof(status), "running '%s'", command);
+
+    draw_status_bar(rows, cols, status, bytes_in);
     struct timespec last_bar_draw;
     clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
 
@@ -197,13 +305,27 @@ int run_streaming_session(ssh_session session, const char *command) {
     char textbox_buf[512];
     int textbox_len = 0;
 
+    // Known full-screen dashboards start switched off (their first keystrokes
+    // would flicker before scoring caught up); everything else starts by
+    // probing with a single character and earns a wider window.
+    int predict_confidence = is_echo_predictable_command(command) ? 1 : 0;
+    int predict_confirms = 0;
+    int predict_misses = 0;
+    int predict_in_cooldown = 0;
+    long predict_cooldown_ms = PREDICT_COOLDOWN_MS;
+    struct timespec predict_cooldown_start;
+
+    char pred_chars[MAX_PREDICTIONS];
+    int predicted = 0; // characters painted locally but not yet confirmed
+
     while (ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
         if (got_sigwinch) {
             got_sigwinch = 0;
             get_terminal_size(&cols, &rows);
             remote_rows = (rows > 1) ? rows - 1 : rows;
             ssh_channel_change_pty_size(channel, cols, remote_rows);
-            draw_status_bar(rows, cols);
+            snprintf(status, sizeof(status), "resized to %dx%d", cols, remote_rows);
+            draw_status_bar(rows, cols, status, bytes_in);
             clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
         }
 
@@ -212,9 +334,22 @@ int run_streaming_session(ssh_session session, const char *command) {
         // neither respects the reduced PTY height we gave it, since both
         // operate on the real terminal geometry. There's no reliable way to
         // catch every such escape sequence, so just repaint continuously.
-        if (elapsed_ms(&last_bar_draw) >= STATUS_BAR_REPAINT_MS) {
-            draw_status_bar(rows, cols);
+        if (status_dirty || elapsed_ms(&last_bar_draw) >= STATUS_BAR_REPAINT_MS) {
+            draw_status_bar(rows, cols, status, bytes_in);
             clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
+            status_dirty = 0;
+        }
+
+        // Prediction shut itself off after repeated wrong guesses; give it
+        // another single-character probe once the cooldown expires, backing
+        // off further each time so a never-echoing program settles down
+        // instead of flickering forever.
+        if (predict_in_cooldown && elapsed_ms(&predict_cooldown_start) >= predict_cooldown_ms) {
+            predict_in_cooldown = 0;
+            predict_confidence = 1;
+            predict_confirms = 0;
+            predict_misses = 0;
+            if (predict_cooldown_ms < PREDICT_COOLDOWN_MAX_MS) predict_cooldown_ms *= 2;
         }
 
         struct pollfd pfd;
@@ -232,6 +367,24 @@ int run_streaming_session(ssh_session session, const char *command) {
                 }
 
                 if (!textbox_active) {
+                    if (ch >= 32 && ch < 127 && predicted < predict_confidence) {
+                        // Plain printable char: paint it now, confirm later.
+                        pred_chars[predicted] = ch;
+                        paint_prediction(ch);
+                        predicted++;
+                    } else if ((ch == 127 || ch == 8) && predicted > 0) {
+                        // Backspace over a still-unconfirmed char: just
+                        // un-paint it locally (the byte still goes to the
+                        // server, which will delete the real one).
+                        rollback_predictions(1);
+                        predicted--;
+                    } else if (predicted > 0) {
+                        // Enter, arrows, control keys: the resulting screen
+                        // change is unpredictable, so give up on the
+                        // outstanding predictions rather than guess.
+                        rollback_predictions(predicted);
+                        predicted = 0;
+                    }
                     ssh_channel_write(channel, &ch, 1);
                     continue;
                 }
@@ -243,11 +396,15 @@ int run_streaming_session(ssh_session session, const char *command) {
                 if (ch == '\r' || ch == '\n') {
                     ssh_channel_write(channel, textbox_buf, textbox_len);
                     ssh_channel_write(channel, "\r", 1);
+                    snprintf(status, sizeof(status), "password sent (%d chars)", textbox_len);
+                    status_dirty = 1;
                     textbox_active = 0;
                     textbox_len = 0;
                 } else if (ch == 27) { // Escape — bail out without sending anything
                     textbox_active = 0;
                     textbox_len = 0;
+                    snprintf(status, sizeof(status), "password entry cancelled");
+                    status_dirty = 1;
                 } else if (ch == 127 || ch == 8) { // Backspace
                     if (textbox_len > 0) textbox_len--;
                 } else if (ch >= 32 && ch < 127) {
@@ -261,19 +418,67 @@ int run_streaming_session(ssh_session session, const char *command) {
 
         int n = ssh_channel_read_nonblocking(channel, iobuf, sizeof(iobuf), 0);
         if (n > 0) {
+            // The server has spoken: drop our grey guesses and let its
+            // authoritative output paint over them in the app's own colors.
+            if (predicted > 0) {
+                // Score the guess first. A small reply carrying the character
+                // we predicted is an echo; a large one is a screen redraw,
+                // which means this program doesn't echo keystrokes as text.
+                int looks_like_echo = (n <= PREDICT_SMALL_ECHO_MAX) &&
+                                      (memchr(iobuf, pred_chars[0], n) != NULL);
+                if (looks_like_echo) {
+                    predict_misses = 0;
+                    if (++predict_confirms >= 2 && predict_confidence != MAX_PREDICTIONS) {
+                        predict_confidence = MAX_PREDICTIONS;
+                        predict_cooldown_ms = PREDICT_COOLDOWN_MS; // earned trust resets backoff
+                        snprintf(status, sizeof(status), "predictive echo on (server echoes input)");
+                        status_dirty = 1;
+                    }
+                } else {
+                    predict_confirms = 0;
+                    if (++predict_misses >= 2) {
+                        if (predict_confidence != 0) {
+                            snprintf(status, sizeof(status),
+                                     "predictive echo off (no echo detected)");
+                            status_dirty = 1;
+                        }
+                        predict_confidence = 0;
+                        predict_in_cooldown = 1;
+                        clock_gettime(CLOCK_MONOTONIC, &predict_cooldown_start);
+                    } else if (predict_confidence > 1) {
+                        predict_confidence = 1; // demote to probing
+                    }
+                }
+
+                rollback_predictions(predicted);
+                predicted = 0;
+            }
             write(STDOUT_FILENO, iobuf, n);
+            bytes_in += n;
             feed_recent_text(recent_text, &recent_len, sizeof(recent_text), iobuf, n);
 
             if (!textbox_active && recent_looks_like_password(recent_text, recent_len)) {
                 textbox_active = 1;
                 textbox_len = 0;
                 recent_len = 0; // don't let this same prompt text re-trigger after we submit
+                snprintf(status, sizeof(status),
+                         "password prompt - typed locally, Enter sends, Esc cancels");
+                draw_status_bar(rows, cols, status, bytes_in); // don't wait for the next tick
             }
         }
 
         int en = ssh_channel_read_nonblocking(channel, iobuf, sizeof(iobuf), 1);
-        if (en > 0) write(STDOUT_FILENO, iobuf, en);
+        if (en > 0) {
+            if (predicted > 0) {
+                rollback_predictions(predicted);
+                predicted = 0;
+            }
+            write(STDOUT_FILENO, iobuf, en);
+            bytes_in += en;
+        }
     }
+
+    if (predicted > 0) rollback_predictions(predicted); // no grey leftovers on detach
 
     signal(SIGWINCH, SIG_DFL);
     clear_status_bar(rows);

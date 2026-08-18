@@ -19,6 +19,40 @@ static pthread_mutex_t workdir_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t session_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int last_exit_status = 0;
+static int tty_required = 0;
+
+// Programs that insist on a real terminal say so in a handful of recognisable
+// ways. Matching the message is far more general than trying to keep a list
+// of every such program up to date.
+static const char *TTY_ERROR_PHRASES[] = {
+    "not a terminal",
+    "not a tty",
+    "no tty",
+    "requires a terminal",
+    "must be run in a terminal",
+    "must be run from a terminal",
+    "terminal required",
+    "inappropriate ioctl for device",
+    "device not configured",
+    NULL
+};
+
+static int output_demands_tty(const char *buf, int len) {
+    // Lowercase a bounded copy so the match is case-insensitive without
+    // touching the output we're about to hand back to the caller.
+    char lower[1024];
+    int n = (len < (int)sizeof(lower) - 1) ? len : (int)sizeof(lower) - 1;
+    for (int i = 0; i < n; i++) {
+        char c = buf[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+    }
+    lower[n] = '\0';
+
+    for (int i = 0; TTY_ERROR_PHRASES[i] != NULL; i++) {
+        if (strstr(lower, TTY_ERROR_PHRASES[i]) != NULL) return 1;
+    }
+    return 0;
+}
 
 // Spinner shown on stderr while exec_() blocks on the network round trip.
 static volatile int spinner_running = 0;
@@ -197,11 +231,20 @@ char* exec_command(ssh_session session, char *command, int visibility) {
         last_exit_status = exit_status;
     }
 
-    if (visibility != 1) {
+    // A non-zero exit plus a "needs a terminal" message means this command
+    // simply can't work through a plain exec channel. Flag it (and swallow
+    // the error text) so the caller can re-run it under a real PTY instead.
+    tty_required = (last_exit_status != 0) && output_demands_tty(output, visible_len);
+
+    if (visibility != 1 && !tty_required) {
         fwrite(output, 1, visible_len, stdout);
     }
 
     return SSH_OK;
+}
+
+int last_command_needed_tty(void) {
+    return tty_required;
 }
 
 

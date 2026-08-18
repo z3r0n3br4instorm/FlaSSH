@@ -4,6 +4,27 @@
 
 <p align="center"><strong>A lag-free SSH experience.</strong></p>
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | sh
+```
+
+Downloads the latest release binary for your architecture (`x86_64` or
+`arm64`) and installs it as `fssh` in `/usr/local/bin` (prompting for sudo
+only if that directory needs it). To install somewhere on your own PATH
+without sudo:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+The binary links against `libssh` at runtime; the installer tells you if it's
+missing. Prefer to read before you pipe to a shell? The script is
+[`install.sh`](install.sh), or grab a binary straight from the
+[releases page](../../releases). Building from source is covered
+[below](#building).
+
 A normal SSH session ties every keystroke to a full network round trip —
 type a character, wait for the remote to echo it back, see it appear. On
 anything but a fast, low-latency link, that's exactly where the familiar
@@ -34,12 +55,41 @@ lag-free this way.
 - **Remote history** — downloads `~/.bash_history` from the remote host on
   connect and merges it with commands you run this session, so **Up/Down**
   recall works from the first command.
-- **PTY streaming mode** — commands that look like they need a real
-  terminal (see the allowlist below) get a full PTY instead of a plain exec:
-  local keystrokes are forwarded raw, remote output (including cursor
-  movement, colors, and full-screen redraws) is written straight to your
-  terminal. A blue status bar (`Streaming...` / `FlashSSH`) is pinned to the
-  bottom row for the duration.
+- **PTY streaming mode** — commands that need a real terminal get a full PTY
+  instead of a plain exec: local keystrokes are forwarded raw, remote output
+  (including cursor movement, colors, and full-screen redraws) is written
+  straight to your terminal. Three things route a command here:
+  1. the allowlist below (known TTY programs, no round trip wasted);
+  2. **automatic fallback** — if a plain exec fails with a "needs a terminal"
+     style error (`stdin is not a terminal`, `inappropriate ioctl for device`,
+     ...), FlashSSH swallows that error and transparently re-runs the command
+     under a PTY. This is what makes things the allowlist has never heard of
+     (`codex`, and anything else) just work;
+  3. **`!` prefix** — `!somecommand` forces streaming mode outright, for
+     programs that need a TTY but don't say so in a recognisable way.
+- **Live status bar** — a blue bar pinned to the bottom row reports what the
+  streaming session is doing rather than just sitting there: the running
+  command, bytes received, terminal resizes, whether predictive echo is on or
+  off (and why), and when input is being captured locally for a password
+  prompt. Format: `Streaming... | <status>` on the left, `<bytes> | FlashSSH`
+  on the right.
+  - **Predictive local echo** — even inside a PTY session, typed characters
+    are painted immediately in **grey** at the cursor instead of waiting for
+    the round trip. When the server's echo arrives it repaints them in the
+    app's own colors (i.e. they "turn white"), so grey text is exactly the
+    text the server hasn't acknowledged yet. Backspacing over a still-grey
+    character un-paints it locally right away. This is the same idea as
+    [mosh](https://mosh.org/)'s predictive echo, minus the full terminal
+    emulator: rather than diffing screen state, FlashSSH simply erases its
+    guesses the instant authoritative output arrives and lets the app
+    repaint. Whether prediction helps is **scored at runtime**, not guessed
+    from the program's name: FlashSSH predicts one character, checks whether
+    the server answers with a small chunk containing it, and either widens the
+    window (a shell, editor, REPL or `codex` confirms almost immediately) or
+    switches prediction off with an exponential backoff before re-probing.
+    That's why it works in sessions the allowlist has never heard of. Known
+    full-screen dashboards (`btop`, `htop`, `top`, `watch`, `mc`) start
+    switched off so their first keystrokes don't flicker.
   - **Ctrl+C** and other control keys are forwarded to the remote program as
     normal — nothing local intercepts them, so a stuck remote process can be
     killed the normal way without touching the FlashSSH client itself.
@@ -71,8 +121,10 @@ irssi weechat sudo su ssh mysql psql sqlite3 ftp sftp
 python3 python node irb pry
 ```
 
-This is a fixed, best-effort list — there's no general way to know a program
-needs a TTY without running it.
+The list only exists to avoid wasting a failed round trip on programs we
+already know about — it is no longer the only route into streaming mode. The
+automatic "needs a terminal" fallback and the `!` prefix cover everything
+else, so an unlisted program like `codex` works without editing this list.
 
 ## Known limitations
 
@@ -82,6 +134,25 @@ needs a TTY without running it.
   give-away; full-screen programs that draw their own input widgets (e.g.
   `btop`'s process filter) can't be detected this way and are just passed
   through raw.
+- **Predictive echo can't help inside `btop`-style dashboards.** This is a
+  hard limit of not embedding a terminal emulator, not a missing switch.
+  Measured against real `btop`: it repaints its *entire* screen on a timer
+  (~19KB/s), never emits a small incremental echo for a keystroke, and never
+  toggles the terminal's cursor visibility — so there is nothing to confirm a
+  prediction against, and no way to know where (or whether) typed text will
+  land. Painting a grey character there would just be overwritten by the next
+  full redraw within ~250ms: flicker, not latency hiding. Closing this
+  properly needs client-side VT screen-state emulation with server-state
+  diffing (the full mosh architecture), which is a much larger project than
+  the heuristics here.
+- **Predictive echo guesses, and sometimes guesses wrong.** Predictions are
+  erased by overwriting them with spaces, which is only strictly correct when
+  you're appending at the end of a line — the dominant case. Inserting
+  mid-line relies on the app redrawing the rest of the line (editors do).
+  A program that's in the predict-enabled set but doesn't echo a particular
+  key can leave a grey character visible until its next redraw. Only
+  single-byte printable ASCII is predicted; UTF-8 input, arrows, and control
+  keys are forwarded without prediction.
 - **Status bar repaints on a timer, not on demand.** `clear`, alternate
   screen buffers (`btop`, `tmux`, `vim`, ...) and similar can wipe the
   reserved bottom row using escape sequences that ignore the reduced PTY
@@ -129,6 +200,13 @@ Examples:
 ./main -i ~/.ssh/id_ed25519 zerone@192.168.1.10
 ```
 
+### At the prompt
+
+| Input             | Meaning                                                    |
+|-------------------|------------------------------------------------------------|
+| `exit` / `quit`   | Close the connection and leave FlashSSH                    |
+| `!<command>`      | Force streaming (PTY) mode for that command                 |
+
 ### Keybindings
 
 | Key            | Action                                                        |
@@ -136,8 +214,10 @@ Examples:
 | Left / Right   | Move the cursor (Right at end-of-line accepts a suggestion)   |
 | Up / Down      | Walk command history                                          |
 | Tab            | Complete the current word (history for the first word, live directory listing for the rest) |
+| Ctrl+D         | Quit on an empty line                                          |
 | Ctrl+C         | (streaming mode) forwarded to the remote program               |
 | Ctrl+Q or Ctrl+] | (streaming mode) detach back to the FlashSSH prompt (use Ctrl+] if your terminal intercepts Ctrl+Q) |
+| Esc            | (streaming mode) cancel a local password entry without sending |
 
 ## Project layout
 

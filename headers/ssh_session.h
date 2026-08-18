@@ -20,6 +20,14 @@ void get_current_dir(char *out, size_t out_size);
 // Exit status of the last command run through exec_command (0 = success).
 int get_last_exit_status(void);
 
+// True if the last exec_command failed specifically because the remote
+// program demanded a real terminal ("stdin is not a terminal" and friends).
+// The allowlist in stream.h can never cover every such program, so the
+// caller uses this to transparently re-run the command under a PTY. When
+// this is set, exec_command deliberately suppresses the error text, since
+// the retry is about to produce the real output.
+int last_command_needed_tty(void);
+
 // Held internally by exec_() around a whole channel lifecycle. A streaming
 // PTY session (see stream.h) opens its own channel directly rather than
 // through exec_(), so it takes this lock itself for the session's whole
