@@ -10,12 +10,8 @@
 curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | sh
 ```
 
-Downloads the latest release binary for your architecture (`x86_64` or
-`arm64`) and installs it as `fssh` in `/usr/local/bin` (prompting for sudo
-only if that directory needs it). To install somewhere on your own PATH
-without sudo:
-
 ```sh
+# No sudo
 curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
@@ -24,6 +20,8 @@ missing. Prefer to read before you pipe to a shell? The script is
 [`install.sh`](install.sh), or grab a binary straight from the
 [releases page](../../releases). Building from source is covered
 [below](#building).
+
+# Why ?
 
 A normal SSH session ties every keystroke to a full network round trip —
 type a character, wait for the remote to echo it back, see it appear. On
@@ -230,3 +228,12 @@ headers/history.c/.h          remote bash history download + in-memory log
 headers/dir_cache.c/.h        background thread caching a live directory listing
 headers/stream.c/.h           PTY passthrough / streaming mode, status bar
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Ometh Abeyrathne
+
+FlashSSH links against [libssh](https://www.libssh.org/), which is LGPL-2.1.
+The released binaries link it dynamically, so the LGPL imposes no additional
+conditions on this project or on anything built with it. A statically linked
+build would need to satisfy the LGPL's relinking requirements.

@@ -9,7 +9,34 @@ permissions:
   contents: write
 
 jobs:
+  # Version is computed before anything is compiled so the binaries can be
+  # stamped with the same tag the release is published under — otherwise the
+  # banner would report a stale version.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: compute
+        run: |
+          latest=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Next version: $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: version
     strategy:
       matrix:
         include:
@@ -30,7 +57,17 @@ jobs:
       - name: Build
         run: |
           make clean
-          make
+          make VERSION="${{ needs.version.outputs.version }}"
+
+      # Checks the compiled binary rather than running it: the banner only
+      # prints once a host argument is supplied, so `./main` on its own would
+      # never show the version.
+      - name: Verify version was baked in
+        run: |
+          if ! strings main | grep -qx "${{ needs.version.outputs.version }}"; then
+            echo "Binary does not contain ${{ needs.version.outputs.version }}" >&2
+            exit 1
+          fi
 
       - name: Package binary
         run: cp main "${{ matrix.artifact }}"
@@ -42,7 +79,7 @@ jobs:
           path: ${{ matrix.artifact }}
 
   release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -56,31 +93,18 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Compute next version
-        id: version
-        run: |
-          latest=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-          if [ -z "$latest" ]; then
-            next="v0.1.0"
-          else
-            IFS='.' read -r major minor patch <<< "${latest#v}"
-            next="v${major}.${minor}.$((patch + 1))"
-          fi
-          echo "Next version: $next"
-          echo "version=$next" >> "$GITHUB_OUTPUT"
-
       - name: Tag release
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.version }}"
+          git tag "${{ needs.version.outputs.version }}"
+          git push origin "${{ needs.version.outputs.version }}"
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.version.outputs.version }}" \
+          gh release create "${{ needs.version.outputs.version }}" \
             artifacts/* \
-            --title "FlashSSH ${{ steps.version.outputs.version }}" \
+            --title "FlashSSH ${{ needs.version.outputs.version }}" \
             --generate-notes

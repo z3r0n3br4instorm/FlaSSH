@@ -13,6 +13,12 @@
 #include "headers/dir_cache.h"
 #include "headers/stream.h"
 
+// Supplied by the Makefile via -DFLASHSSH_VERSION; this fallback only applies
+// if someone compiles the sources without it.
+#ifndef FLASHSSH_VERSION
+#define FLASHSSH_VERSION "dev"
+#endif
+
 static char remote_home[256] = "";
 
 static void fetch_remote_home(ssh_session session) {
@@ -77,7 +83,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "One or more required arguments are missing !\n Eg: fssh [-i identity_file] <username>@<host>");
         return -2;
     }
-    fprintf(stdout, "\033[3mFlashSSH\033[0m Version 0.0.1\n");
+    fprintf(stdout, "\033[3mFlashSSH\033[0m %s\n", FLASHSSH_VERSION);
     signal(SIGINT, SIG_IGN); // Ctrl+C must never kill the client, only the remote process it's forwarded to
     ssh_session session;
 
