@@ -63,8 +63,18 @@ static void build_prompt(char *out, size_t out_size, const char *user, const cha
 
 int main(int argc, char *argv[]) {
 
-    if (argc < 2) {
-        fprintf(stderr, "One or more required arguments are missing !\n Eg: fssh <username>@<host>");
+    char *identity_file = NULL;
+    char *host_arg = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            identity_file = argv[++i];
+        } else {
+            host_arg = argv[i];
+        }
+    }
+
+    if (host_arg == NULL) {
+        fprintf(stderr, "One or more required arguments are missing !\n Eg: fssh [-i identity_file] <username>@<host>");
         return -2;
     }
     fprintf(stdout, "\033[3mFlashSSH\033[0m Version 0.0.1\n");
@@ -72,16 +82,16 @@ int main(int argc, char *argv[]) {
     ssh_session session;
 
     char *username = NULL;
-    char *host = argv[1];
-    char *at = strchr(argv[1], '@');
+    char *host = host_arg;
+    char *at = strchr(host_arg, '@');
     if (at != NULL) {
         *at = '\0';
-        username = argv[1];
+        username = host_arg;
         host = at + 1;
     }
 
     fprintf(stdout, "Establishing connection with %s\n", host);
-    session = establish_connection(host, username);
+    session = establish_connection(host, username, identity_file);
     fetch_remote_home(session);
     get_workDir(session); // seed the tracked cwd once; later prompts read it locally instead of re-querying over SSH
     history_load(session);

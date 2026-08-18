@@ -8,8 +8,10 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #define CTRL_Q 0x11
+#define STATUS_BAR_REPAINT_MS 300
 
 static const char *STREAMING_COMMANDS[] = {
     "btop", "htop", "top", "vim", "vi", "nvim", "nano", "less", "more",
@@ -77,6 +79,12 @@ static void draw_status_bar(int total_rows, int cols) {
 
     write(STDOUT_FILENO, "\033[0m", 4);
     write(STDOUT_FILENO, "\0338", 2); // restore cursor position + attributes
+}
+
+static long elapsed_ms(const struct timespec *since) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - since->tv_sec) * 1000L + (now.tv_nsec - since->tv_nsec) / 1000000L;
 }
 
 static void clear_status_bar(int total_rows) {
@@ -172,6 +180,8 @@ int run_streaming_session(ssh_session session, const char *command) {
 
     terminal_enable_raw_mode();
     draw_status_bar(rows, cols);
+    struct timespec last_bar_draw;
+    clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
 
     char iobuf[4096];
     int detached = 0;
@@ -190,6 +200,17 @@ int run_streaming_session(ssh_session session, const char *command) {
             remote_rows = (rows > 1) ? rows - 1 : rows;
             ssh_channel_change_pty_size(channel, cols, remote_rows);
             draw_status_bar(rows, cols);
+            clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
+        }
+
+        // The remote can wipe our reserved row via a raw "clear whole
+        // screen" or by switching to its own alternate screen buffer —
+        // neither respects the reduced PTY height we gave it, since both
+        // operate on the real terminal geometry. There's no reliable way to
+        // catch every such escape sequence, so just repaint continuously.
+        if (elapsed_ms(&last_bar_draw) >= STATUS_BAR_REPAINT_MS) {
+            draw_status_bar(rows, cols);
+            clock_gettime(CLOCK_MONOTONIC, &last_bar_draw);
         }
 
         struct pollfd pfd;

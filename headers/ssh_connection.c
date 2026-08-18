@@ -89,7 +89,31 @@ int verify_knownhost(ssh_session session)
     return 0;
 }
 
-ssh_session establish_connection(char* host, char* username)
+// Tries public-key auth like the real `ssh` binary: with -i, that specific
+// key; otherwise whatever ssh-agent/default ~/.ssh keys are available.
+static int try_pubkey_auth(ssh_session session, char* username, char* identity_file)
+{
+  if (identity_file == NULL) {
+    return ssh_userauth_publickey_auto(session, username, NULL);
+  }
+
+  ssh_key privkey = NULL;
+  int rc = ssh_pki_import_privkey_file(identity_file, NULL, NULL, NULL, &privkey);
+  if (rc == SSH_ERROR) {
+    char *passphrase = getpass("Enter passphrase for key: ");
+    rc = ssh_pki_import_privkey_file(identity_file, passphrase, NULL, NULL, &privkey);
+  }
+  if (rc != SSH_OK) {
+    fprintf(stderr, "Could not load identity file %s\n", identity_file);
+    return SSH_AUTH_ERROR;
+  }
+
+  int auth_rc = ssh_userauth_publickey(session, username, privkey);
+  ssh_key_free(privkey);
+  return auth_rc;
+}
+
+ssh_session establish_connection(char* host, char* username, char* identity_file)
 {
   ssh_session my_ssh_session = NULL;
   int rc;
@@ -122,12 +146,16 @@ ssh_session establish_connection(char* host, char* username)
     exit(-1);
   }
 
-  // Authenticate ourselves
-  password = getpass("Enter Password: ");
-  rc = ssh_userauth_password(my_ssh_session, username, password);
-  if (rc != SSH_AUTH_SUCCESS)
+  // Authenticate ourselves: public key first (like ssh does), password as fallback
+  int auth_rc = try_pubkey_auth(my_ssh_session, username, identity_file);
+  if (auth_rc != SSH_AUTH_SUCCESS) {
+    password = getpass("Enter Password: ");
+    auth_rc = ssh_userauth_password(my_ssh_session, username, password);
+  }
+
+  if (auth_rc != SSH_AUTH_SUCCESS)
   {
-    fprintf(stderr, "Error authenticating with password: %s\n",
+    fprintf(stderr, "Error authenticating: %s\n",
             ssh_get_error(my_ssh_session));
     ssh_disconnect(my_ssh_session);
     ssh_free(my_ssh_session);
@@ -135,7 +163,4 @@ ssh_session establish_connection(char* host, char* username)
   }
 
   return my_ssh_session;
-
-  // ssh_disconnect(my_ssh_session);
-  // ssh_free(my_ssh_session);
 }

@@ -95,7 +95,7 @@ int exec_(ssh_session session, char* command, int *nbytes, char *output, size_t 
 char* exec_command(ssh_session session, char *command, int visibility) {
     int nbytes;
     char output[4048];
-    char full_cmd[512];
+    char full_cmd[1400];
     int previous_line_break = -1;
     int line_breaks_position = -1;
     int exit_status = 0;
@@ -103,6 +103,16 @@ char* exec_command(ssh_session session, char *command, int visibility) {
     if (! strcmp(command, "clear")) { // Placeholder until i figure this out
         system("clear");
         return SSH_OK;
+    }
+
+    // Without a PTY, remote `ls` sees a non-tty stdout and falls back to
+    // one entry per line. Force column formatting like a real terminal
+    // would get, inserted right after "ls" so any flags the user typed
+    // still take effect afterward.
+    char adjusted_command[600];
+    if (command[0] == 'l' && command[1] == 's' && (command[2] == '\0' || command[2] == ' ')) {
+        snprintf(adjusted_command, sizeof(adjusted_command), "ls -C%s", command + 2);
+        command = adjusted_command;
     }
 
     pthread_mutex_lock(&workdir_mutex);
