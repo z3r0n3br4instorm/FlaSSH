@@ -8,4 +8,4 @@ main: $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o main $(LDLIBS)
 
 clean:
-	rm -f main *.o
+	rm -f main *.o headers/*.o
