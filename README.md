@@ -192,8 +192,8 @@ in CI.
 | Platform            | Status                                                  |
 |---------------------|---------------------------------------------------------|
 | Linux x86_64 / arm64 | Fully supported, prebuilt binaries on every release    |
-| macOS arm64 / x86_64 | Built on every release (`brew install libssh` needed)  |
-| Windows x86_64      | Best-effort MSYS2 build — see the caveat below           |
+| macOS arm64 / x86_64 | Built on every release (`macos-15` / `macos-15-intel`)  |
+| Windows x86_64      | MSYS2 build, needs `msys-2.0.dll` — see the caveat below |
 | Windows 32-bit / ARM | Not available                                           |
 
 FlaSSH is built directly on POSIX terminal APIs — `termios` for raw mode,
