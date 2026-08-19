@@ -14,6 +14,7 @@ jobs:
   # banner would report a stale version.
   version:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.compute.outputs.version }}
     steps:
@@ -35,20 +36,13 @@ jobs:
           echo "Next version: $next"
           echo "version=$next" >> "$GITHUB_OUTPUT"
 
-  test:
-    needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssh-dev
-      - name: Run unit tests
-        run: make test
-
+  # Tests run inside each build job rather than as a separate gate: it avoids
+  # a second dependency install (the step that hung for an hour), exercises
+  # the tests on every platform we ship, and means one flaky apt run can no
+  # longer block the whole pipeline.
   build-unix:
-    needs: [version, test]
+    needs: version
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -66,20 +60,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # DEBIAN_FRONTEND stops any debconf prompt from blocking on stdin, and
+      # the retry loop rides out the transient mirror failures that left this
+      # step hanging indefinitely once already.
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libssh-dev
+          for attempt in 1 2 3; do
+            if sudo -E apt-get update -qq && \
+               sudo -E apt-get install -y -qq --no-install-recommends libssh-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; retrying..." >&2
+            sleep 10
+          done
+          echo "apt-get failed after 3 attempts" >&2
+          exit 1
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 15
         run: brew install libssh
 
       - name: Build
         run: |
           make clean
           make VERSION="${{ needs.version.outputs.version }}"
+
+      - name: Run unit tests
+        run: make test
 
       # Checks the compiled binary rather than running it: the banner only
       # prints once a host argument is supplied, so `bin/fssh` on its own
@@ -106,8 +118,9 @@ jobs:
   # resulting .exe needs msys-2.0.dll beside it. It is allowed to fail
   # without blocking a release — see the README for the full caveat.
   build-windows:
-    needs: [version, test]
+    needs: version
     runs-on: windows-latest
+    timeout-minutes: 25
     continue-on-error: true
     defaults:
       run:
@@ -145,6 +158,7 @@ jobs:
     needs: [version, build-unix, build-windows]
     if: always() && needs.build-unix.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
