@@ -1,7 +1,7 @@
 #ifndef SSH_SESSION_H
 #define SSH_SESSION_H
 
-#include "ssh_connection.h"
+#include "flassh/ssh_connection.h"
 #include <stddef.h>
 
 // Runs `command` over `session` and collects its output into `output`

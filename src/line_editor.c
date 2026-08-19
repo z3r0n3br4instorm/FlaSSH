@@ -1,10 +1,12 @@
-#include "line_editor.h"
-#include "history.h"
-#include "dir_cache.h"
+#include "flassh/line_editor.h"
+#include "flassh/history.h"
+#include "flassh/dir_cache.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
+#include <poll.h>
 
 #define LINE_MAX_LEN 1024
 #define MAX_COMPLETION_MATCHES 64
@@ -137,6 +139,41 @@ static void complete_word(char *buf, int *len, int *pos) {
     *pos = word_start + replacement_len;
 }
 
+// Reads one more byte of a multi-byte key sequence, giving up after `ms` so a
+// bare Esc keypress doesn't block forever waiting for bytes that never come.
+static int read_byte_timeout(int ms) {
+    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+    if (poll(&pfd, 1, ms) <= 0) return -1;
+    unsigned char b;
+    if (read(STDIN_FILENO, &b, 1) != 1) return -1;
+    return b;
+}
+
+static int is_word_char(char c) {
+    return !(c == ' ' || c == '\t');
+}
+
+// Start of the word at/before `pos` (skips any run of spaces first), so
+// Alt+Left and Ctrl+Backspace agree on where a word begins.
+static int word_start_before(const char *buf, int pos) {
+    while (pos > 0 && !is_word_char(buf[pos - 1])) pos--;
+    while (pos > 0 && is_word_char(buf[pos - 1])) pos--;
+    return pos;
+}
+
+static int word_end_after(const char *buf, int len, int pos) {
+    while (pos < len && !is_word_char(buf[pos])) pos++;
+    while (pos < len && is_word_char(buf[pos])) pos++;
+    return pos;
+}
+
+static void delete_range(char *buf, int *len, int *pos, int from, int to) {
+    if (from >= to) return;
+    memmove(&buf[from], &buf[to], *len - to);
+    *len -= (to - from);
+    *pos = from;
+}
+
 char* read_line(const char *prompt) {
     static char buf[LINE_MAX_LEN];
     static char saved_line[LINE_MAX_LEN];
@@ -157,63 +194,120 @@ char* read_line(const char *prompt) {
             refresh_line(prompt, buf, len, len, ""); // drop any ghost suggestion before committing
             write(STDOUT_FILENO, "\r\n", 2);
             break;
-        } else if (c == 4) { // Ctrl+D — quit on an empty line, like a real shell
+        } else if (c == 4) { // Ctrl+D — quit on an empty line, delete forward otherwise
             if (len == 0) {
                 write(STDOUT_FILENO, "\r\n", 2);
                 terminal_disable_raw_mode();
                 return NULL;
             }
-        } else if (c == 127 || c == 8) { // Backspace
+            if (pos < len) delete_range(buf, &len, &pos, pos, pos + 1);
+        } else if (c == 127) { // Backspace
             if (pos > 0) {
                 memmove(&buf[pos - 1], &buf[pos], len - pos);
                 pos--;
                 len--;
             }
+        } else if (c == 8 || c == 23) { // Ctrl+Backspace (^H) / Ctrl+W — delete word back
+            delete_range(buf, &len, &pos, word_start_before(buf, pos), pos);
+        } else if (c == 1) {  // Ctrl+A — start of line
+            pos = 0;
+        } else if (c == 5) {  // Ctrl+E — end of line
+            pos = len;
+        } else if (c == 21) { // Ctrl+U — kill to start of line
+            delete_range(buf, &len, &pos, 0, pos);
+        } else if (c == 11) { // Ctrl+K — kill to end of line
+            len = pos;
         } else if (c == 9) { // Tab completion
             complete_word(buf, &len, &pos);
-        } else if (c == 27) { // ESC — arrow keys arrive as ESC [ <letter>
-            char seq[2];
-            if (read(STDIN_FILENO, &seq[0], 1) != 1) continue;
-            if (read(STDIN_FILENO, &seq[1], 1) != 1) continue;
-            if (seq[0] != '[') continue;
+        } else if (c == 27) { // Esc — start of an escape/meta key sequence
+            int b = read_byte_timeout(60);
+            if (b < 0) continue; // a bare Esc press
 
-            if (seq[1] == 'A') { // Up
-                if (hist_index > 0) {
-                    if (hist_index == history_count()) {
-                        memcpy(saved_line, buf, len);
-                        saved_line[len] = '\0';
-                    }
-                    hist_index--;
-                    const char *h = history_get_by_index(hist_index);
-                    len = strlen(h);
-                    memcpy(buf, h, len);
-                    pos = len;
+            if (b == '[' || b == 'O') {
+                // CSI: parameter bytes until a final byte in 0x40..0x7e.
+                // Alt/Ctrl arrows arrive as e.g. ESC [ 1 ; 3 D, which the old
+                // fixed 2-byte read mangled into literal text.
+                char params[16];
+                int plen = 0, final = -1;
+                while (plen < (int)sizeof(params) - 1) {
+                    int d = read_byte_timeout(60);
+                    if (d < 0) break;
+                    if (b == 'O' || (d >= 0x40 && d <= 0x7e)) { final = d; break; }
+                    params[plen++] = (char)d;
                 }
-            } else if (seq[1] == 'B') { // Down
-                if (hist_index < history_count()) {
-                    hist_index++;
-                    const char *h = (hist_index == history_count()) ? saved_line : history_get_by_index(hist_index);
-                    len = strlen(h);
-                    memcpy(buf, h, len);
-                    pos = len;
-                }
-            } else if (seq[1] == 'C') { // Right — accepts the ghost suggestion at end-of-line
-                if (pos == len && suggestion[0] != '\0') {
-                    int slen = strlen(suggestion);
-                    if (len + slen < LINE_MAX_LEN) {
-                        memcpy(&buf[len], suggestion, slen);
-                        len += slen;
+                params[plen] = '\0';
+                if (final < 0) continue;
+
+                // ";2" shift, ";3" alt, ";5" ctrl, ";7" ctrl+alt — any of the
+                // word-wise modifiers turn arrows into word movement.
+                const char *semi = strchr(params, ';');
+                int mod = semi ? atoi(semi + 1) : 0;
+                int wordwise = (mod == 3 || mod == 4 || mod == 5 || mod == 7);
+
+                if (final == 'A') { // Up
+                    if (hist_index > 0) {
+                        if (hist_index == history_count()) {
+                            memcpy(saved_line, buf, len);
+                            saved_line[len] = '\0';
+                        }
+                        hist_index--;
+                        const char *h = history_get_by_index(hist_index);
+                        len = strlen(h);
+                        memcpy(buf, h, len);
                         pos = len;
                     }
-                } else if (pos < len) {
-                    pos++;
+                } else if (final == 'B') { // Down
+                    if (hist_index < history_count()) {
+                        hist_index++;
+                        const char *h = (hist_index == history_count()) ? saved_line : history_get_by_index(hist_index);
+                        len = strlen(h);
+                        memcpy(buf, h, len);
+                        pos = len;
+                    }
+                } else if (final == 'C') { // Right / Alt+Right
+                    if (wordwise) {
+                        pos = word_end_after(buf, len, pos);
+                    } else if (pos == len && suggestion[0] != '\0') {
+                        int slen = strlen(suggestion);
+                        if (len + slen < LINE_MAX_LEN) {
+                            memcpy(&buf[len], suggestion, slen);
+                            len += slen;
+                            pos = len;
+                        }
+                    } else if (pos < len) {
+                        pos++;
+                    }
+                } else if (final == 'D') { // Left / Alt+Left
+                    if (wordwise) {
+                        pos = word_start_before(buf, pos);
+                    } else if (pos > 0) {
+                        pos--;
+                    }
+                } else if (final == 'H') { // Home
+                    pos = 0;
+                } else if (final == 'F') { // End
+                    pos = len;
+                } else if (final == '~') {
+                    int n = atoi(params);
+                    if (n == 1 || n == 7) pos = 0;             // Home
+                    else if (n == 4 || n == 8) pos = len;      // End
+                    else if (n == 3) {                          // Delete / Ctrl+Delete
+                        if (wordwise) delete_range(buf, &len, &pos, pos, word_end_after(buf, len, pos));
+                        else if (pos < len) delete_range(buf, &len, &pos, pos, pos + 1);
+                    } else continue;
+                } else {
+                    continue; // unrecognized sequence, nothing changed
                 }
-            } else if (seq[1] == 'D') { // Left
-                if (pos > 0) {
-                    pos--;
-                }
+            } else if (b == 127 || b == 8) { // Alt+Backspace — delete word back
+                delete_range(buf, &len, &pos, word_start_before(buf, pos), pos);
+            } else if (b == 'b') { // Alt+B — word left (readline)
+                pos = word_start_before(buf, pos);
+            } else if (b == 'f') { // Alt+F — word right (readline)
+                pos = word_end_after(buf, len, pos);
+            } else if (b == 'd') { // Alt+D — delete word forward
+                delete_range(buf, &len, &pos, pos, word_end_after(buf, len, pos));
             } else {
-                continue; // unrecognized escape sequence, nothing changed
+                continue;
             }
         } else if (c >= 32 && c < 127) { // Printable
             if (len < LINE_MAX_LEN - 1) {

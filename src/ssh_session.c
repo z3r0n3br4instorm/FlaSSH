@@ -1,4 +1,4 @@
-#include "ssh_session.h"
+#include "flassh/ssh_session.h"
 #include <libssh/libssh.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
-#include "ssh_connection.h"
+#include "flassh/ssh_connection.h"
 
 // Session VARs
 char work_dir[256];

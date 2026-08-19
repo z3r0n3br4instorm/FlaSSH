@@ -1,7 +1,7 @@
 #ifndef STREAM_H
 #define STREAM_H
 
-#include "ssh_connection.h"
+#include "flassh/ssh_connection.h"
 
 // Best-effort heuristic: does `command`'s first word look like a
 // full-screen/interactive program (btop, vim, sudo, ...) that needs a real
@@ -16,7 +16,7 @@ int is_streaming_command(const char *command);
 // Ctrl+C and other control bytes are forwarded to the remote program as-is
 // (so e.g. btop or a sudo password prompt behave normally and nothing can
 // kill the local client); Ctrl+Q is reserved locally to detach back to the
-// FlashSSH prompt without forwarding it and without touching the remote
+// FlaSSH prompt without forwarding it and without touching the remote
 // process. Returns 0 if the session ran (however it ended), -1 if the
 // PTY/exec setup itself failed (caller should fall back to exec_command).
 int run_streaming_session(ssh_session session, const char *command);

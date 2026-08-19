@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Assets/logo.png" alt="FlashSSH logo">
+  <img src="docs/logo.png" alt="FlaSSH logo">
 </p>
 
 <p align="center"><strong>A lag-free SSH experience.</strong></p>
@@ -7,12 +7,12 @@
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlaSSH/main/install.sh | sh
 ```
 
 ```sh
 # No sudo
-curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlaSSH/main/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 The binary links against `libssh` at runtime; the installer tells you if it's
@@ -26,13 +26,13 @@ missing. Prefer to read before you pipe to a shell? The script is
 A normal SSH session ties every keystroke to a full network round trip —
 type a character, wait for the remote to echo it back, see it appear. On
 anything but a fast, low-latency link, that's exactly where the familiar
-laggy, rubber-banding feeling of typing over SSH comes from. FlashSSH exists
+laggy, rubber-banding feeling of typing over SSH comes from. FlaSSH exists
 because most of that round-tripping is unnecessary: typing, cursor movement,
 history recall, and tab completion all happen instantly against a client-side
 line editor, with a single network round trip only when you actually press
 Enter — instead of one per keystroke.
 
-FlashSSH is a custom SSH client built on top of [libssh](https://www.libssh.org/),
+FlaSSH is a custom SSH client built on top of [libssh](https://www.libssh.org/),
 with a p10k-style prompt, fish-style history suggestions, and a best-effort
 PTY passthrough mode for full-screen and interactive programs (`btop`, `vim`,
 `sudo`, `tmux`, ...) that genuinely need a real terminal and can't be made
@@ -60,7 +60,7 @@ lag-free this way.
   1. the allowlist below (known TTY programs, no round trip wasted);
   2. **automatic fallback** — if a plain exec fails with a "needs a terminal"
      style error (`stdin is not a terminal`, `inappropriate ioctl for device`,
-     ...), FlashSSH swallows that error and transparently re-runs the command
+     ...), FlaSSH swallows that error and transparently re-runs the command
      under a PTY. This is what makes things the allowlist has never heard of
      (`codex`, and anything else) just work;
   3. **`!` prefix** — `!somecommand` forces streaming mode outright, for
@@ -69,7 +69,7 @@ lag-free this way.
   streaming session is doing rather than just sitting there: the running
   command, bytes received, terminal resizes, whether predictive echo is on or
   off (and why), and when input is being captured locally for a password
-  prompt. Format: `Streaming... | <status>` on the left, `<bytes> | FlashSSH`
+  prompt. Format: `Streaming... | <status>` on the left, `<bytes> | FlaSSH`
   on the right.
   - **Predictive local echo** — even inside a PTY session, typed characters
     are painted immediately in **grey** at the cursor instead of waiting for
@@ -78,10 +78,10 @@ lag-free this way.
     text the server hasn't acknowledged yet. Backspacing over a still-grey
     character un-paints it locally right away. This is the same idea as
     [mosh](https://mosh.org/)'s predictive echo, minus the full terminal
-    emulator: rather than diffing screen state, FlashSSH simply erases its
+    emulator: rather than diffing screen state, FlaSSH simply erases its
     guesses the instant authoritative output arrives and lets the app
     repaint. Whether prediction helps is **scored at runtime**, not guessed
-    from the program's name: FlashSSH predicts one character, checks whether
+    from the program's name: FlaSSH predicts one character, checks whether
     the server answers with a small chunk containing it, and either widens the
     window (a shell, editor, REPL or `codex` confirms almost immediately) or
     switches prediction off with an exponential backoff before re-probing.
@@ -90,10 +90,10 @@ lag-free this way.
     switched off so their first keystrokes don't flicker.
   - **Ctrl+C** and other control keys are forwarded to the remote program as
     normal — nothing local intercepts them, so a stuck remote process can be
-    killed the normal way without touching the FlashSSH client itself.
+    killed the normal way without touching the FlaSSH client itself.
   - **Ctrl+Q** (or **Ctrl+]** if your terminal eats Ctrl+Q for its own flow
     control — Termux and several desktop terminal emulators do) detaches
-    back to the FlashSSH prompt. For most streamed programs this also ends
+    back to the FlaSSH prompt. For most streamed programs this also ends
     the remote process (same as closing an SSH session would). The one
     exception is `tmux`: since a tmux session lives in a persistent server
     process, detaching (either with Ctrl+Q/Ctrl+] or tmux's own `Ctrl+B d`)
@@ -158,7 +158,7 @@ else, so an unlisted program like `codex` works without editing this list.
   such sequence, the bar just repaints every 300ms, so there's a brief
   (usually imperceptible) window where it can be missing.
 - **Directory tracking is client-side.** Since a plain SSH exec channel
-  doesn't persist state between commands, FlashSSH tracks your current
+  doesn't persist state between commands, FlaSSH tracks your current
   directory itself and re-`cd`s into it before every command. Running an
   interactive shell through streaming mode (e.g. `sudo -i`) and `cd`-ing
   around inside it won't be reflected back once you return to the normal
@@ -169,40 +169,66 @@ else, so an unlisted program like `codex` works without editing this list.
 
 ## Building
 
-Dependencies: `gcc`, `make`, `libssh` (with headers), and `pthread` (part of
-glibc on Linux).
+Dependencies: `gcc`, `make`, `libssh` (with headers), and `pthread`.
 
 ```sh
 # Debian/Ubuntu
 sudo apt-get install libssh-dev
+# Fedora: sudo dnf install libssh-devel
+# Arch:   sudo pacman -S libssh
+# macOS:  brew install libssh
 
-make
+make          # -> bin/fssh
+make test     # unit tests for the pure helpers
+make clean
 ```
 
-Prebuilt `linux-x86_64` and `linux-arm64` binaries are attached to each
-[GitHub release](../../releases), built automatically by
-`.github/workflows/build-and-release.yml` on every push to `main`.
+Objects land in `build/`, the binary in `bin/fssh`. The version shown in the
+banner comes from `git describe` for local builds, or `make VERSION=v1.2.3`
+in CI.
 
-This produces a `main` binary in the project root.
+### Platform support
+
+| Platform            | Status                                                  |
+|---------------------|---------------------------------------------------------|
+| Linux x86_64 / arm64 | Fully supported, prebuilt binaries on every release    |
+| macOS arm64 / x86_64 | Built on every release (`brew install libssh` needed)  |
+| Windows x86_64      | Best-effort MSYS2 build — see the caveat below           |
+| Windows 32-bit / ARM | Not available                                           |
+
+FlaSSH is built directly on POSIX terminal APIs — `termios` for raw mode,
+`ioctl(TIOCGWINSZ)` for the window size, `poll()` on stdin, `SIGWINCH`, and
+`getpass()`. Native Windows provides none of these; a real Windows port means
+rewriting the terminal layer against the Console API
+(`SetConsoleMode`/`ReadConsoleInput`), which is a genuine porting project
+rather than a build-configuration change. The Windows job therefore compiles
+against the **MSYS2 POSIX emulation layer**: the resulting `.exe` needs
+`msys-2.0.dll` next to it and is not a native binary. That job is marked
+`continue-on-error`, so if it breaks it will not block a release. 32-bit
+Windows is not offered because MSYS2 dropped i686 support, and Windows-on-ARM
+has no supported MSYS2 toolchain.
+
+Prebuilt binaries are attached to each [GitHub release](../../releases), built
+by `.github/workflows/build-and-release.yml` on every push to `main`.
 
 ## Usage
 
 ```sh
-./main [-i identity_file] <username>@<host>
+./bin/fssh [-i identity_file] <username>@<host>
 ```
 
 Examples:
 
 ```sh
-./main zerone@192.168.1.10
-./main -i ~/.ssh/id_ed25519 zerone@192.168.1.10
+./bin/fssh zerone@192.168.1.10
+./bin/fssh -i ~/.ssh/id_ed25519 zerone@192.168.1.10
 ```
 
 ### At the prompt
 
 | Input             | Meaning                                                    |
 |-------------------|------------------------------------------------------------|
-| `exit` / `quit`   | Close the connection and leave FlashSSH                    |
+| `exit` / `quit`   | Close the connection and leave FlaSSH                    |
 | `!<command>`      | Force streaming (PTY) mode for that command                 |
 
 ### Keybindings
@@ -210,30 +236,51 @@ Examples:
 | Key            | Action                                                        |
 |----------------|----------------------------------------------------------------|
 | Left / Right   | Move the cursor (Right at end-of-line accepts a suggestion)   |
+| Alt/Ctrl + Left / Right | Move by word                                         |
 | Up / Down      | Walk command history                                          |
+| Home / End, Ctrl+A / Ctrl+E | Jump to start / end of line                      |
 | Tab            | Complete the current word (history for the first word, live directory listing for the rest) |
-| Ctrl+D         | Quit on an empty line                                          |
+| Ctrl+Backspace, Ctrl+W, Alt+Backspace | Delete the word before the cursor   |
+| Alt+D, Ctrl+Delete | Delete the word after the cursor                          |
+| Ctrl+U / Ctrl+K | Delete to start / end of line                                |
+| Delete         | Delete the character under the cursor                          |
+| Ctrl+D         | Quit on an empty line, else delete forward                     |
 | Ctrl+C         | (streaming mode) forwarded to the remote program               |
-| Ctrl+Q or Ctrl+] | (streaming mode) detach back to the FlashSSH prompt (use Ctrl+] if your terminal intercepts Ctrl+Q) |
+| Ctrl+Q or Ctrl+] | (streaming mode) detach back to the FlaSSH prompt (use Ctrl+] if your terminal intercepts Ctrl+Q) |
 | Esc            | (streaming mode) cancel a local password entry without sending |
 
 ## Project layout
 
 ```
-main.c                  entry point, prompt rendering, CLI arg parsing
-headers/ssh_connection.c/.h   connection setup, host-key verification, auth
-headers/ssh_session.c/.h      remote exec, client-tracked cwd, exit status
-headers/line_editor.c/.h      raw-mode line editor: history nav, completion, ghost suggestions
-headers/history.c/.h          remote bash history download + in-memory log
-headers/dir_cache.c/.h        background thread caching a live directory listing
-headers/stream.c/.h           PTY passthrough / streaming mode, status bar
+├── bin/                  build output (bin/fssh)
+├── build/                object files and test binaries
+├── docs/                 logo, prototypes
+├── external/             room for vendored dependencies
+├── include/flassh/       public headers
+│   ├── dir_cache.h
+│   ├── history.h
+│   ├── line_editor.h
+│   ├── ssh_connection.h
+│   ├── ssh_session.h
+│   └── stream.h
+├── src/
+│   ├── main.c            entry point, prompt rendering, CLI arg parsing
+│   ├── ssh_connection.c  connection setup, host-key verification, auth
+│   ├── ssh_session.c     remote exec, client-tracked cwd, exit status
+│   ├── line_editor.c     raw-mode line editor: history, completion, word keys
+│   ├── history.c         remote bash/zsh history download + in-memory log
+│   ├── dir_cache.c       background thread caching a live directory listing
+│   └── stream.c          PTY passthrough / streaming mode, status bar
+├── tests/                unit tests (make test)
+├── install.sh
+└── Makefile
 ```
 
 ## License
 
 [MIT](LICENSE) © 2026 Ometh Abeyrathne
 
-FlashSSH links against [libssh](https://www.libssh.org/), which is LGPL-2.1.
+FlaSSH links against [libssh](https://www.libssh.org/), which is LGPL-2.1.
 The released binaries link it dynamically, so the LGPL imposes no additional
 conditions on this project or on anything built with it. A statically linked
 build would need to satisfy the LGPL's relinking requirements.

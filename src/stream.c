@@ -1,6 +1,6 @@
-#include "stream.h"
-#include "ssh_session.h"
-#include "line_editor.h"
+#include "flassh/stream.h"
+#include "flassh/ssh_session.h"
+#include "flassh/line_editor.h"
 #include <libssh/libssh.h>
 #include <stdio.h>
 #include <string.h>
@@ -109,7 +109,7 @@ static void format_bytes(long bytes, char *out, size_t out_size) {
 // Drawing saves/restores the cursor so it doesn't disturb whatever the
 // streamed program is doing.
 //
-// Layout: "Streaming... | <live status>" on the left, "<bytes> | FlashSSH" on
+// Layout: "Streaming... | <live status>" on the left, "<bytes> | FlaSSH" on
 // the right. `status` is what the session is currently doing (local password
 // entry, predictive echo state, resizes, ...) so the bar reports what's going
 // on instead of just sitting there. Everything is plain ASCII so the column
@@ -122,7 +122,7 @@ static void draw_status_bar(int total_rows, int cols, const char *status, long b
     write(STDOUT_FILENO, seq, n);
     write(STDOUT_FILENO, "\033[44m\033[K", 8); // blue background, blank the row
 
-    static const char brand[] = "FlashSSH";
+    static const char brand[] = "FlaSSH";
     char bytes_str[32];
     format_bytes(bytes, bytes_str, sizeof(bytes_str));
 
@@ -486,7 +486,7 @@ int run_streaming_session(ssh_session session, const char *command) {
 
     // Closing the channel here ends the remote process too (same as
     // closing a plain SSH session kills what was running in it) — Ctrl+Q
-    // returns you to the FlashSSH prompt, but it doesn't leave btop/sudo
+    // returns you to the FlaSSH prompt, but it doesn't leave btop/sudo
     // running detached the way tmux would.
     ssh_channel_send_eof(channel);
     ssh_channel_close(channel);

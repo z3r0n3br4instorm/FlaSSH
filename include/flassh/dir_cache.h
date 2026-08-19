@@ -1,7 +1,7 @@
 #ifndef DIR_CACHE_H
 #define DIR_CACHE_H
 
-#include "ssh_connection.h"
+#include "flassh/ssh_connection.h"
 
 #define DIR_CACHE_NAME_MAX 256
 

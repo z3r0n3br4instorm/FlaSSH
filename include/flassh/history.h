@@ -1,7 +1,7 @@
 #ifndef HISTORY_H
 #define HISTORY_H
 
-#include "ssh_connection.h"
+#include "flassh/ssh_connection.h"
 
 // Downloads the remote user's bash history over `session` and loads it
 // into this process's in-memory history.

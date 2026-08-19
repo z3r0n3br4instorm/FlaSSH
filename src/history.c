@@ -1,5 +1,5 @@
-#include "history.h"
-#include "ssh_session.h"
+#include "flassh/history.h"
+#include "flassh/ssh_session.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

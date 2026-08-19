@@ -6,17 +6,17 @@
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
-#include "headers/ssh_session.h"
-#include "headers/ssh_connection.h"
-#include "headers/history.h"
-#include "headers/line_editor.h"
-#include "headers/dir_cache.h"
-#include "headers/stream.h"
+#include "flassh/ssh_session.h"
+#include "flassh/ssh_connection.h"
+#include "flassh/history.h"
+#include "flassh/line_editor.h"
+#include "flassh/dir_cache.h"
+#include "flassh/stream.h"
 
-// Supplied by the Makefile via -DFLASHSSH_VERSION; this fallback only applies
+// Supplied by the Makefile via -DFLASSH_VERSION; this fallback only applies
 // if someone compiles the sources without it.
-#ifndef FLASHSSH_VERSION
-#define FLASHSSH_VERSION "dev"
+#ifndef FLASSH_VERSION
+#define FLASSH_VERSION "dev"
 #endif
 
 static char remote_home[256] = "";
@@ -41,8 +41,13 @@ static void abbreviate_home(const char *cwd, char *out, size_t out_size) {
     }
 }
 
-// Powerline-style two-line prompt: "[user@host]->[cwd]" segments on line
-// one, a caret on line two colored green/red by the last exit status.
+// Powerline-style two-line prompt. A box-drawing elbow joins the two rows
+// the way p10k-style themes do:
+//
+//   ┌ user@host  ~/path
+//   └ $
+//
+// so the segments on top and the caret below read as one connected prompt.
 static void build_prompt(char *out, size_t out_size, const char *user, const char *host, const char *cwd) {
     char display_path[256];
     abbreviate_home(cwd, display_path, sizeof(display_path));
@@ -57,14 +62,18 @@ static void build_prompt(char *out, size_t out_size, const char *user, const cha
     const char *caret_color = (get_last_exit_status() == 0) ? "\033[38;5;42m" : "\033[38;5;196m";
     const char *caret_char = (user != NULL && strcmp(user, "root") == 0) ? "#" : "$";
 
+    const char *frame_color = "\033[38;5;245m";
+
     snprintf(out, out_size,
+        "%s┌\033[0m"
         "\033[48;5;25m\033[38;5;255m %s "
         "\033[38;5;25m\033[48;5;238m"
         "\033[38;5;255m %s "
         "\033[38;5;238m\033[49m"
         "\033[0m\r\n"
+        "%s└\033[0m "
         "%s%s\033[0m ",
-        identity, display_path, caret_color, caret_char);
+        frame_color, identity, display_path, frame_color, caret_color, caret_char);
 }
 
 int main(int argc, char *argv[]) {
@@ -83,7 +92,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "One or more required arguments are missing !\n Eg: fssh [-i identity_file] <username>@<host>");
         return -2;
     }
-    fprintf(stdout, "\033[3mFlashSSH\033[0m %s\n", FLASHSSH_VERSION);
+    fprintf(stdout, "\033[3mFlaSSH\033[0m %s\n", FLASSH_VERSION);
     signal(SIGINT, SIG_IGN); // Ctrl+C must never kill the client, only the remote process it's forwarded to
     ssh_session session;
 

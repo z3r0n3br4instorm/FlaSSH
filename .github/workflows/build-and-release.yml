@@ -35,24 +35,46 @@ jobs:
           echo "Next version: $next"
           echo "version=$next" >> "$GITHUB_OUTPUT"
 
-  build:
+  test:
     needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssh-dev
+      - name: Run unit tests
+        run: make test
+
+  build-unix:
+    needs: [version, test]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
-            artifact: flashssh-linux-x86_64
+            artifact: flassh-linux-x86_64
           - runner: ubuntu-24.04-arm
-            artifact: flashssh-linux-arm64
+            artifact: flassh-linux-arm64
+          - runner: macos-14        # Apple silicon
+            artifact: flassh-macos-arm64
+          - runner: macos-13        # Intel
+            artifact: flassh-macos-x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libssh-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libssh
 
       - name: Build
         run: |
@@ -60,17 +82,17 @@ jobs:
           make VERSION="${{ needs.version.outputs.version }}"
 
       # Checks the compiled binary rather than running it: the banner only
-      # prints once a host argument is supplied, so `./main` on its own would
-      # never show the version.
+      # prints once a host argument is supplied, so `bin/fssh` on its own
+      # would never show the version.
       - name: Verify version was baked in
         run: |
-          if ! strings main | grep -qx "${{ needs.version.outputs.version }}"; then
+          if ! strings bin/fssh | grep -qx "${{ needs.version.outputs.version }}"; then
             echo "Binary does not contain ${{ needs.version.outputs.version }}" >&2
             exit 1
           fi
 
       - name: Package binary
-        run: cp main "${{ matrix.artifact }}"
+        run: cp bin/fssh "${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -78,8 +100,50 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  # FlaSSH is built on POSIX terminal APIs (termios, TIOCGWINSZ, poll on
+  # stdin, SIGWINCH, getpass) that native Windows does not provide, so this
+  # builds against the MSYS2 POSIX emulation layer rather than natively. The
+  # resulting .exe needs msys-2.0.dll beside it. It is allowed to fail
+  # without blocking a release — see the README for the full caveat.
+  build-windows:
+    needs: [version, test]
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: >-
+            gcc
+            make
+            libssh-devel
+            binutils
+
+      - name: Build
+        run: |
+          make clean
+          make VERSION="${{ needs.version.outputs.version }}"
+
+      - name: Package binary
+        run: cp bin/fssh flassh-windows-x86_64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flassh-windows-x86_64
+          path: flassh-windows-x86_64.exe
+
   release:
-    needs: [version, build]
+    needs: [version, build-unix, build-windows]
+    if: always() && needs.build-unix.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -106,5 +170,5 @@ jobs:
         run: |
           gh release create "${{ needs.version.outputs.version }}" \
             artifacts/* \
-            --title "FlashSSH ${{ needs.version.outputs.version }}" \
+            --title "FlaSSH ${{ needs.version.outputs.version }}" \
             --generate-notes

@@ -1,5 +1,5 @@
-#include "dir_cache.h"
-#include "ssh_session.h"
+#include "flassh/dir_cache.h"
+#include "flassh/ssh_session.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>

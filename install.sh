@@ -1,31 +1,37 @@
 #!/bin/sh
-# FlashSSH installer. Downloads the latest release binary for this machine's
+# FlaSSH installer. Downloads the latest release binary for this machine's
 # architecture and installs it as `fssh`.
 #
-#   curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlashSSH/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/z3r0n3br4instorm/FlaSSH/main/install.sh | sh
 #
 # Override the destination with INSTALL_DIR=~/.local/bin (no sudo needed).
 set -eu
 
-REPO="z3r0n3br4instorm/FlashSSH"
+REPO="z3r0n3br4instorm/FlaSSH"
 BIN_NAME="fssh"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
-if [ "$(uname -s)" != "Linux" ]; then
-    echo "FlashSSH currently ships Linux binaries only (detected $(uname -s))." >&2
-    echo "Build from source instead: https://github.com/$REPO" >&2
-    exit 1
-fi
+case "$(uname -s)" in
+    Linux)  OS="linux" ;;
+    Darwin) OS="macos" ;;
+    *)
+        echo "No prebuilt binary for $(uname -s)." >&2
+        echo "Build from source instead: https://github.com/$REPO" >&2
+        exit 1
+        ;;
+esac
 
 case "$(uname -m)" in
-    x86_64 | amd64)  ASSET="flashssh-linux-x86_64" ;;
-    aarch64 | arm64) ASSET="flashssh-linux-arm64" ;;
+    x86_64 | amd64)  ARCH="x86_64" ;;
+    aarch64 | arm64) ARCH="arm64" ;;
     *)
         echo "No prebuilt binary for $(uname -m). Build from source instead:" >&2
         echo "  https://github.com/$REPO" >&2
         exit 1
         ;;
 esac
+
+ASSET="flassh-${OS}-${ARCH}"
 
 command -v curl >/dev/null 2>&1 || { echo "curl is required." >&2; exit 1; }
 
@@ -66,6 +72,7 @@ if command -v ldd >/dev/null 2>&1; then
         echo "  Debian/Ubuntu: sudo apt-get install libssh-4" >&2
         echo "  Fedora:        sudo dnf install libssh" >&2
         echo "  Arch:          sudo pacman -S libssh" >&2
+        echo "  macOS:         brew install libssh" >&2
     fi
 fi
 
