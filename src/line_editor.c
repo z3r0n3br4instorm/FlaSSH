@@ -31,6 +31,74 @@ void terminal_enable_raw_mode(void) {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
 
+// Syntax colors for the line being typed. Only SGR sequences are emitted —
+// no printable characters are added or removed — so the cursor arithmetic in
+// refresh_line() stays correct.
+#define SYN_COMMAND "\033[1;36m"  // first word: the program being run
+#define SYN_FLAG    "\033[33m"    // -x / --long
+#define SYN_STRING  "\033[32m"    // '...' / "..."
+#define SYN_PATH    "\033[34m"    // anything containing a /
+#define SYN_OP      "\033[35m"    // | > < & ; operators
+#define SYN_RESET   "\033[0m"
+
+static int is_shell_operator(char c) {
+    return c == '|' || c == '>' || c == '<' || c == '&' || c == ';';
+}
+
+// Writes `buf` with shell-ish syntax colouring. A new "first word" begins
+// after every operator, so the command after a pipe is highlighted too.
+static void write_highlighted(const char *buf, int len) {
+    int i = 0;
+    int expect_command = 1;
+
+    while (i < len) {
+        if (buf[i] == ' ' || buf[i] == '\t') {
+            write(STDOUT_FILENO, &buf[i], 1);
+            i++;
+            continue;
+        }
+
+        if (is_shell_operator(buf[i])) {
+            int start = i;
+            while (i < len && is_shell_operator(buf[i])) i++; // ||, &&, >>
+            write(STDOUT_FILENO, SYN_OP, strlen(SYN_OP));
+            write(STDOUT_FILENO, &buf[start], i - start);
+            write(STDOUT_FILENO, SYN_RESET, strlen(SYN_RESET));
+            expect_command = 1;
+            continue;
+        }
+
+        if (buf[i] == '\'' || buf[i] == '"') {
+            char quote = buf[i];
+            int start = i++;
+            while (i < len && buf[i] != quote) i++;
+            if (i < len) i++; // closing quote, if the user has typed it yet
+            write(STDOUT_FILENO, SYN_STRING, strlen(SYN_STRING));
+            write(STDOUT_FILENO, &buf[start], i - start);
+            write(STDOUT_FILENO, SYN_RESET, strlen(SYN_RESET));
+            expect_command = 0;
+            continue;
+        }
+
+        int start = i;
+        int has_slash = 0;
+        while (i < len && buf[i] != ' ' && buf[i] != '\t' && !is_shell_operator(buf[i])) {
+            if (buf[i] == '/') has_slash = 1;
+            i++;
+        }
+
+        const char *color = NULL;
+        if (expect_command)        color = SYN_COMMAND;
+        else if (buf[start] == '-') color = SYN_FLAG;
+        else if (has_slash)         color = SYN_PATH;
+
+        if (color != NULL) write(STDOUT_FILENO, color, strlen(color));
+        write(STDOUT_FILENO, &buf[start], i - start);
+        if (color != NULL) write(STDOUT_FILENO, SYN_RESET, strlen(SYN_RESET));
+        expect_command = 0;
+    }
+}
+
 // Redraws the whole prompt block: since prompt may itself span multiple
 // terminal rows (e.g. a two-line powerline-style prompt), a plain
 // erase-current-line isn't enough — we move back up to the top of the
@@ -51,7 +119,7 @@ static void refresh_line(const char *prompt, const char *buf, int len, int pos, 
     write(STDOUT_FILENO, "\r\033[J", 4);
 
     write(STDOUT_FILENO, prompt, strlen(prompt));
-    write(STDOUT_FILENO, buf, len);
+    write_highlighted(buf, len);
 
     int suggestion_len = 0;
     if (pos == len && suggestion != NULL && suggestion[0] != '\0') {

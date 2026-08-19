@@ -12,6 +12,7 @@
 #include "flassh/line_editor.h"
 #include "flassh/dir_cache.h"
 #include "flassh/stream.h"
+#include "flassh/predictor.h"
 
 // Supplied by the Makefile via -DFLASSH_VERSION; this fallback only applies
 // if someone compiles the sources without it.
@@ -111,6 +112,7 @@ int main(int argc, char *argv[]) {
     get_workDir(session); // seed the tracked cwd once; later prompts read it locally instead of re-querying over SSH
     history_load(session);
     dir_cache_start(session);
+    predictor_start(session);
 
     // Discard any keystrokes queued by the terminal while the above setup
     // (connecting, password prompt, history download) was still running,
@@ -162,6 +164,11 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
+        }
+        {
+            char cwd_after[256];
+            get_current_dir(cwd_after, sizeof(cwd_after));
+            predictor_note_command(cwd_after, command);
         }
         free(command);
     }

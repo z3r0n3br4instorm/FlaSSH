@@ -11,6 +11,11 @@
 int exec_(ssh_session session, char* command, int *nbytes, char *output, size_t output_size, int *exit_status);
 
 char* exec_command(ssh_session session, char* command, int visibility);
+
+// Applies the same rewrites the interactive path uses before running a
+// command (forcing `ls` into coloured column output, etc.). Shared with the
+// predictor so speculatively cached output matches what a live run prints.
+void expand_command_for_exec(ssh_session session, const char *in, char *out, size_t out_size);
 char* get_workDir(ssh_session session);
 
 // Thread-safe snapshot of the client-tracked current directory (used by the

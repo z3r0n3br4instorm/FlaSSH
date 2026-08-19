@@ -50,9 +50,46 @@ lag-free this way.
   history, and any later word against a live directory listing of the
   current remote working directory (kept fresh by a background thread, so
   completion doesn't block on a network round trip).
-- **Remote history** — downloads `~/.bash_history` from the remote host on
-  connect and merges it with commands you run this session, so **Up/Down**
-  recall works from the first command.
+- **Remote history** — downloads `~/.bash_history` and `~/.zsh_history` from
+  the remote host on connect (handling zsh's `EXTENDED_HISTORY` timestamps)
+  and merges them with commands you run this session, so **Up/Down** recall
+  works from the first command.
+- **Syntax highlighting** — the line you are typing is coloured live: the
+  command being run, `-flags`, `'quoted strings'`, `/paths`, and shell
+  operators each get their own colour, with the word after a `|` or `&&`
+  treated as a new command. Only colour codes are emitted, so cursor
+  movement and word navigation are unaffected.
+- **File/folder/executable colours** — `ls` is rewritten to force column
+  output *and* colour (`--color=always`, or `-G` on macOS/BSD, detected once
+  per session via `uname`). The remote `ls` does the classification, since
+  it is the only side that actually knows what is a directory, an
+  executable, or a symlink.
+- **Live streaming output** — output is written to your terminal as it
+  arrives rather than being collected first, so `journalctl -f`, `tail -f`,
+  `ping` and other never-ending commands print continuously instead of
+  sitting behind a spinner that never stops. **Ctrl+C** sends `SIGINT` to the
+  remote command and returns you to the prompt (exit status `130`, as a
+  shell would report); the spinner only shows while there is genuinely no
+  output yet.
+- **Predictive execution** — a background thread speculatively runs the
+  commands you are most likely to type next and caches the results, so
+  pressing Enter often costs no round trip at all. On every directory change
+  it pre-warms the listing for where you are *and* for each immediate
+  subdirectory, so `cd sub` followed by `ls` is already answered before you
+  type it. Cached answers are byte-identical to a live run (they go through
+  the same command expansion) and expire after 6s, so nothing stale is shown.
+  **Only provably read-only commands are ever run speculatively** — `ls`,
+  `pwd`, `df`, `git status`, and similar. Anything that writes, and anything
+  containing shell syntax that could redirect, chain or substitute
+  (`>`, `|`, `;`, `&&`, `$(...)`, backticks, globs), is refused outright,
+  because the user has not pressed Enter on it yet. That boundary is covered
+  by unit tests.
+- **Automatic reconnection** — if the link drops, FlaSSH pins a red
+  `Reconnecting…` bar to the bottom row and retries with backoff, reusing the
+  same session handle so background threads stay valid. If the server wants
+  credentials again, a centred TUI prompt asks for the password (never
+  echoed, Esc to cancel). Your working directory and history survive the
+  reconnect.
 - **PTY streaming mode** — commands that need a real terminal get a full PTY
   instead of a plain exec: local keystrokes are forwarded raw, remote output
   (including cursor movement, colors, and full-screen redraws) is written
@@ -245,6 +282,7 @@ Examples:
 | Ctrl+U / Ctrl+K | Delete to start / end of line                                |
 | Delete         | Delete the character under the cursor                          |
 | Ctrl+D         | Quit on an empty line, else delete forward                     |
+| Ctrl+C         | Interrupt a running command (streams stop, prompt returns)      |
 | Ctrl+C         | (streaming mode) forwarded to the remote program               |
 | Ctrl+Q or Ctrl+] | (streaming mode) detach back to the FlaSSH prompt (use Ctrl+] if your terminal intercepts Ctrl+Q) |
 | Esc            | (streaming mode) cancel a local password entry without sending |
@@ -265,6 +303,7 @@ Examples:
 │   └── stream.h
 ├── src/
 │   ├── main.c            entry point, prompt rendering, CLI arg parsing
+│   ├── predictor.c       speculative read-only execution + result cache
 │   ├── ssh_connection.c  connection setup, host-key verification, auth
 │   ├── ssh_session.c     remote exec, client-tracked cwd, exit status
 │   ├── line_editor.c     raw-mode line editor: history, completion, word keys
